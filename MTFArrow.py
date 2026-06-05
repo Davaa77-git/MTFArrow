@@ -107,13 +107,14 @@ def mtf_arrow_local(file_path, higher_tf='60min', risk=6, year=2025):
 #    Entry   : Open of bar AFTER signal bar
 #    SL Long : lowest Low  of last sl_lookback bars (swing low)
 #    SL Short: highest High of last sl_lookback bars (swing high)
-#    TP      : Entry ± 2 × risk_distance  (1:2 RR)
-#    Risk    : fixed $ per trade; position size implied by SL distance
+#    TP      : Entry ± 2 × SL_distance  (1:2 RR)
+#    P&L     : price_move × lot_size  → динамик (SL зайнаас хамаарна)
 # ============================================================
-def run_backtest(final_df, initial_capital=10_000, risk_usd=100, sl_lookback=10):
+def run_backtest(final_df, initial_capital=10_000, lot_size=1.0, sl_lookback=10):
     """
-    risk_usd    : fixed $ risked per trade (SL → -risk_usd, TP → +2*risk_usd)
-    sl_lookback : bars to look back for swing high/low SL placement
+    lot_size    : XAUUSD-д 1.0 = $1 per $1 price move (0.01 lot).
+                  Lot_size ихэсгэхэд position томорно.
+    sl_lookback : swing SL-д хэдэн бар харах
     """
     df = final_df.reset_index()
     n  = len(df)
@@ -139,13 +140,15 @@ def run_backtest(final_df, initial_capital=10_000, risk_usd=100, sl_lookback=10)
                 tp_hit = row['Low']  <= p['tp']
 
             if sl_hit or tp_hit:
+                # P&L = actual price distance × lot_size  (dynamic)
+                sl_dist = p['risk_dist']
                 if sl_hit:
                     p['exit_price'] = p['sl']
-                    p['pnl']        = -risk_usd
+                    p['pnl']        = -sl_dist * lot_size
                     p['result']     = 'SL'
                 else:
                     p['exit_price'] = p['tp']
-                    p['pnl']        = 2 * risk_usd
+                    p['pnl']        = sl_dist * 2 * lot_size   # TP = 2× SL dist
                     p['result']     = 'TP'
                 p['exit_time'] = row['time']
                 capital       += p['pnl']
@@ -196,13 +199,10 @@ def run_backtest(final_df, initial_capital=10_000, risk_usd=100, sl_lookback=10)
     if position is not None:
         last = df.iloc[-1]
         ep   = last['Close']
-        dist = abs(ep - position['entry_price'])
-        full = abs(position['tp'] - position['entry_price'])
-        raw_pnl = risk_usd * 2 * (dist / full) if full > 0 else 0
-        if position['side'] == 'long':
-            pnl = raw_pnl if ep > position['entry_price'] else -raw_pnl
-        else:
-            pnl = raw_pnl if ep < position['entry_price'] else -raw_pnl
+        price_diff = ep - position['entry_price']
+        if position['side'] == 'short':
+            price_diff = -price_diff
+        pnl = price_diff * lot_size
         position.update({'exit_price': ep, 'exit_time': last['time'],
                          'pnl': pnl, 'result': 'OPEN'})
         capital += pnl
@@ -449,9 +449,9 @@ if __name__ == "__main__":
     RISK           = 6            # ASCTrend1i Risk
     WINDOW         = 120          # bars per screen
     INITIAL_CAP    = 10_000       # $
-    RISK_PER_TRADE = 100          # $ risked per trade (SL → -$100, TP → +$200)
-    SL_LOOKBACK    = 10           # recent N bars-ийн swing high/low дээр SL тавих
-    YEAR           = 2025         # ← жилийг энд өөрчилнө
+    LOT_SIZE       = 1.0          # P&L = price_move × lot_size (XAUUSD: 1.0 ≈ 0.01 lot)
+    SL_LOOKBACK    = 10           # swing SL-д харах барын тоо
+    YEAR           = 2023         # ← жилийг энд өөрчилнө
 
     # 1. Compute signals
     df_result = mtf_arrow_local(FILE, higher_tf=HTF, risk=RISK, year=YEAR)
@@ -463,7 +463,7 @@ if __name__ == "__main__":
     print("\n[INFO] Running backtest ...")
     trades_df, eq_curve, cap0 = run_backtest(
         df_result, initial_capital=INITIAL_CAP,
-        risk_usd=RISK_PER_TRADE, sl_lookback=SL_LOOKBACK)
+        lot_size=LOT_SIZE, sl_lookback=SL_LOOKBACK)
 
     # 4. Statistics
     stats = calc_stats(trades_df, eq_curve, cap0)

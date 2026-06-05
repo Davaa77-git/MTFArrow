@@ -137,11 +137,12 @@ def build_signals(m15_file, h4_file, year=2025, risk=6):
     return m15_calc
 
 # ============================================================
-# 3. Backtest  (1:2 RR, fixed risk)
+# 3. Backtest  (1:2 RR, dynamic P&L)
 #    SL Long : lowest Low  of last sl_lookback bars (swing low)
 #    SL Short: highest High of last sl_lookback bars (swing high)
+#    P&L     : price_move × lot_size  (динамик — SL зайнаас хамаарна)
 # ============================================================
-def run_backtest(final_df, initial_capital=10_000, risk_usd=100, sl_lookback=10):
+def run_backtest(final_df, initial_capital=10_000, lot_size=1.0, sl_lookback=10):
     df = final_df.reset_index()
     n  = len(df)
 
@@ -164,13 +165,14 @@ def run_backtest(final_df, initial_capital=10_000, risk_usd=100, sl_lookback=10)
                 tp_hit = row['Low']  <= p['tp']
 
             if sl_hit or tp_hit:
+                sl_dist = p['risk_dist']
                 if sl_hit:
                     p['exit_price'] = p['sl']
-                    p['pnl']        = -risk_usd
+                    p['pnl']        = -sl_dist * lot_size
                     p['result']     = 'SL'
                 else:
                     p['exit_price'] = p['tp']
-                    p['pnl']        = 2 * risk_usd
+                    p['pnl']        = sl_dist * 2 * lot_size
                     p['result']     = 'TP'
                 p['exit_time'] = row['time']
                 capital       += p['pnl']
@@ -214,11 +216,10 @@ def run_backtest(final_df, initial_capital=10_000, risk_usd=100, sl_lookback=10)
     if position is not None:
         last = df.iloc[-1]
         ep   = last['Close']
-        full = abs(position['tp'] - position['entry_price'])
-        dist = abs(ep - position['entry_price'])
-        raw  = risk_usd * 2 * (dist / full) if full > 0 else 0
-        pnl  = raw if ((position['side']=='long' and ep > position['entry_price']) or
-                       (position['side']=='short' and ep < position['entry_price'])) else -raw
+        price_diff = ep - position['entry_price']
+        if position['side'] == 'short':
+            price_diff = -price_diff
+        pnl = price_diff * lot_size
         position.update({'exit_price': ep, 'exit_time': last['time'],
                          'pnl': pnl, 'result': 'OPEN'})
         capital += pnl
@@ -438,9 +439,9 @@ if __name__ == "__main__":
     RISK           = 6
     WINDOW         = 120
     INITIAL_CAP    = 10_000
-    RISK_PER_TRADE = 100          # $ risked per trade (SL → -$100, TP → +$200)
-    SL_LOOKBACK    = 10           # recent N bars-ийн swing high/low дээр SL тавих
-    YEAR           = 2025         # ← жилийг энд өөрчилнө
+    LOT_SIZE       = 1.0          # P&L = price_move × lot_size (XAUUSD: 1.0 ≈ 0.01 lot)
+    SL_LOOKBACK    = 10           # swing SL-д харах барын тоо
+    YEAR           = 2019         # ← жилийг энд өөрчилнө
 
     # 1. Build signals (M15 filtered by H4 direction)
     df_result = build_signals(M15_FILE, H4_FILE, year=YEAR, risk=RISK)
@@ -452,7 +453,7 @@ if __name__ == "__main__":
     print("\n[INFO] Running backtest ...")
     trades_df, eq_curve, cap0 = run_backtest(
         df_result, initial_capital=INITIAL_CAP,
-        risk_usd=RISK_PER_TRADE, sl_lookback=SL_LOOKBACK)
+        lot_size=LOT_SIZE, sl_lookback=SL_LOOKBACK)
 
     # 4. Stats
     stats = calc_stats(trades_df, eq_curve, cap0)
