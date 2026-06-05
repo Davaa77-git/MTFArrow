@@ -341,11 +341,12 @@ def plot_backtest(trades_df, eq_curve, initial_capital, stats, year=2025):
 # ============================================================
 # 6. Interactive chart
 # ============================================================
-def draw_bars(ax, df_window, bar_width=0.4):
+def draw_bars(ax, df_window, trades_window=None, bar_width=0.4):
     ax.cla()
-    n = len(df_window)
-    segs_hl, segs_op, segs_cl, colors = [], [], [], []
+    n   = len(df_window)
+    idx = df_window.index
 
+    segs_hl, segs_op, segs_cl, colors = [], [], [], []
     for i, (_, row) in enumerate(df_window.iterrows()):
         o, h, l, c = row['Open'], row['High'], row['Low'], row['Close']
         col = '#26a69a' if c >= o else '#ef5350'
@@ -357,6 +358,23 @@ def draw_bars(ax, df_window, bar_width=0.4):
     ax.add_collection(LineCollection(segs_hl, colors=colors, linewidths=1.2))
     ax.add_collection(LineCollection(segs_op, colors=colors, linewidths=1.2))
     ax.add_collection(LineCollection(segs_cl, colors=colors, linewidths=1.2))
+
+    if trades_window is not None and len(trades_window):
+        for _, t in trades_window.iterrows():
+            x0 = int(np.clip(idx.searchsorted(pd.Timestamp(t['entry_time']), side='left'),  0, n-1))
+            x1 = int(np.clip(idx.searchsorted(pd.Timestamp(t['exit_time']),  side='right'), 0, n-1))
+            if x1 <= x0:
+                x1 = min(x0 + 1, n - 1)
+            ax.hlines(t['entry_price'], x0, x1, colors='#ffffff',
+                      linewidths=0.9, linestyles=':', alpha=0.55, zorder=3)
+            ax.hlines(t['sl'], x0, x1, colors='#ff1744',
+                      linewidths=1.1, linestyles='--', alpha=0.75, zorder=3)
+            ax.hlines(t['tp'], x0, x1, colors='#00e676',
+                      linewidths=1.1, linestyles='--', alpha=0.75, zorder=3)
+            ax.annotate(f'SL {t["sl"]:.1f}', xy=(x1, t['sl']), xytext=(2, 0),
+                        textcoords='offset points', color='#ff1744', fontsize=6, va='center')
+            ax.annotate(f'TP {t["tp"]:.1f}', xy=(x1, t['tp']), xytext=(2, 0),
+                        textcoords='offset points', color='#00e676', fontsize=6, va='center')
 
     up_pts = [(i, r['UpArrow']) for i, (_, r) in enumerate(df_window.iterrows())
               if not np.isnan(r['UpArrow'])]
@@ -370,11 +388,11 @@ def draw_bars(ax, df_window, bar_width=0.4):
     step = max(1, n // 10)
     xs = np.arange(n)
     ax.set_xticks(xs[::step])
-    ax.set_xticklabels([df_window.index[i].strftime('%m/%d %H:%M') for i in xs[::step]],
+    ax.set_xticklabels([idx[i].strftime('%m/%d %H:%M') for i in xs[::step]],
                        rotation=30, ha='right', fontsize=7)
     ax.set_xlim(-1, n)
     pmin, pmax = df_window['Low'].min(), df_window['High'].max()
-    pad = (pmax - pmin) * 0.10
+    pad = (pmax - pmin) * 0.12
     ax.set_ylim(pmin - pad, pmax + pad)
     ax.set_facecolor('#131722')
     ax.tick_params(colors='#d1d4dc', labelsize=7)
@@ -390,9 +408,17 @@ def draw_bars(ax, df_window, bar_width=0.4):
                   facecolor='#1e222d', edgecolor='#363c4e',
                   labelcolor='#d1d4dc', fontsize=8)
 
-def plot_chart(final_df, window_size=120, year=2025):
+def plot_chart(final_df, trades_df=None, window_size=120, year=2025):
     total = len(final_df)
     state = {'pos': max(0, total - window_size)}
+
+    if trades_df is not None and not trades_df.empty:
+        tdf = trades_df[trades_df['result'] != 'OPEN'].copy()
+        tdf['entry_time'] = pd.to_datetime(tdf['entry_time'])
+        tdf['exit_time']  = pd.to_datetime(tdf['exit_time'])
+    else:
+        tdf = None
+
     fig = plt.figure(figsize=(16, 7), facecolor='#131722')
     fig.canvas.manager.set_window_title(f'MTFArrow H4→M15 ({year})')
     ax    = fig.add_axes([0.05, 0.18, 0.93, 0.76])
@@ -407,7 +433,12 @@ def plot_chart(final_df, window_size=120, year=2025):
     def refresh(pos):
         pos = int(max(0, min(pos, total - window_size)))
         state['pos'] = pos
-        draw_bars(ax, final_df.iloc[pos: pos + window_size])
+        win = final_df.iloc[pos: pos + window_size]
+        visible = None
+        if tdf is not None:
+            w0, w1 = win.index[0], win.index[-1]
+            visible = tdf[(tdf['entry_time'] <= w1) & (tdf['exit_time'] >= w0)]
+        draw_bars(ax, win, trades_window=visible)
         fig.canvas.draw_idle()
 
     slider.on_changed(refresh)
@@ -446,25 +477,25 @@ if __name__ == "__main__":
     # 1. Build signals (M15 filtered by H4 direction)
     df_result = build_signals(M15_FILE, H4_FILE, year=YEAR, risk=RISK)
 
-    # 2. Interactive chart
-    plot_chart(df_result, window_size=WINDOW, year=YEAR)
-
-    # 3. Backtest
+    # 2. Backtest
     print("\n[INFO] Running backtest ...")
     trades_df, eq_curve, cap0 = run_backtest(
         df_result, initial_capital=INITIAL_CAP,
         lot_size=LOT_SIZE, sl_lookback=SL_LOOKBACK)
 
-    # 4. Stats
+    # 3. Stats
     stats = calc_stats(trades_df, eq_curve, cap0)
-    print("\n===== BACKTEST RESULTS (H4→M15) =====")
+    print("\n===== BACKTEST RESULTS (H4->M15) =====")
     for k, v in stats.items():
         print(f"  {k:<20}: {v}")
 
-    # 5. Save
+    # 4. Save
     out_csv = f"D:/Meta5/data/MTFArrow_H4M15_trades_{YEAR}.csv"
     trades_df.to_csv(out_csv, index=False)
     print(f"\n[INFO] Trade log: {out_csv}")
 
-    # 6. Plot
+    # 5. Interactive chart (with SL/TP lines)
+    plot_chart(df_result, trades_df=trades_df, window_size=WINDOW, year=YEAR)
+
+    # 6. Equity curve plot
     plot_backtest(trades_df, eq_curve, cap0, stats, year=YEAR)
