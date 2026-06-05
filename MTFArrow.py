@@ -104,24 +104,25 @@ def mtf_arrow_local(file_path, higher_tf='60min', risk=6, year=2025):
 
 # ============================================================
 # 3. Backtest
-#    Entry  : Open of bar AFTER signal bar
-#    SL Long : signal bar's Low
-#    SL Short: signal bar's High
-#    TP      : Entry ± 2 × risk_distance   (1:2 RR)
-#    Skip new signal while in a trade
+#    Entry   : Open of bar AFTER signal bar
+#    SL Long : lowest Low  of last sl_lookback bars (swing low)
+#    SL Short: highest High of last sl_lookback bars (swing high)
+#    TP      : Entry ± 2 × risk_distance  (1:2 RR)
+#    Risk    : fixed $ per trade; position size implied by SL distance
 # ============================================================
-def run_backtest(final_df, initial_capital=10_000, risk_usd=100):
+def run_backtest(final_df, initial_capital=10_000, risk_usd=100, sl_lookback=10):
     """
-    risk_usd : fixed $ risked per trade (SL hit → -risk_usd, TP hit → +2*risk_usd)
+    risk_usd    : fixed $ risked per trade (SL → -risk_usd, TP → +2*risk_usd)
+    sl_lookback : bars to look back for swing high/low SL placement
     """
-    df = final_df.reset_index()   # keeps 'time' as column
+    df = final_df.reset_index()
     n  = len(df)
 
     trades          = []
     capital         = initial_capital
     eq_curve        = [capital]
-    position        = None        # dict when open
-    last_sig_bucket = None        # HTF bucket of last entry — skip duplicates
+    position        = None
+    last_sig_bucket = None
 
     for i in range(1, n):
         row  = df.iloc[i]
@@ -138,15 +139,14 @@ def run_backtest(final_df, initial_capital=10_000, risk_usd=100):
                 tp_hit = row['Low']  <= p['tp']
 
             if sl_hit or tp_hit:
-                # If both triggered same bar → conservative: SL wins
                 if sl_hit:
-                    p['exit_price']  = p['sl']
-                    p['pnl']         = -risk_usd
-                    p['result']      = 'SL'
+                    p['exit_price'] = p['sl']
+                    p['pnl']        = -risk_usd
+                    p['result']     = 'SL'
                 else:
-                    p['exit_price']  = p['tp']
-                    p['pnl']         = 2 * risk_usd
-                    p['result']      = 'TP'
+                    p['exit_price'] = p['tp']
+                    p['pnl']        = 2 * risk_usd
+                    p['result']     = 'TP'
                 p['exit_time'] = row['time']
                 capital       += p['pnl']
                 trades.append(p)
@@ -160,18 +160,21 @@ def run_backtest(final_df, initial_capital=10_000, risk_usd=100):
             dn = not np.isnan(prev['DnArrow'])
 
             if up or dn:
-                # One entry per HTF bucket — skip repeated bars of same signal
                 sig_bucket = prev['HTF_bucket']
                 if sig_bucket == last_sig_bucket:
                     continue
                 last_sig_bucket = sig_bucket
 
-                entry = row['Open']
+                # Swing SL: recent N-bar low/high up to and including signal bar
+                sig_idx   = i - 1
+                lookback  = df.iloc[max(0, sig_idx - sl_lookback + 1) : sig_idx + 1]
+                entry     = row['Open']
+
                 if up:
-                    sl   = prev['Low']
+                    sl   = lookback['Low'].min()
                     side = 'long'
                 else:
-                    sl   = prev['High']
+                    sl   = lookback['High'].max()
                     side = 'short'
 
                 risk_dist = abs(entry - sl)
@@ -446,8 +449,9 @@ if __name__ == "__main__":
     RISK           = 6            # ASCTrend1i Risk
     WINDOW         = 120          # bars per screen
     INITIAL_CAP    = 10_000       # $
-    RISK_PER_TRADE = 100          # $ risked per trade (SL=−$100, TP=+$200)
-    YEAR           = 2022         # ← жилийг энд өөрчилнө
+    RISK_PER_TRADE = 100          # $ risked per trade (SL → -$100, TP → +$200)
+    SL_LOOKBACK    = 10           # recent N bars-ийн swing high/low дээр SL тавих
+    YEAR           = 2025         # ← жилийг энд өөрчилнө
 
     # 1. Compute signals
     df_result = mtf_arrow_local(FILE, higher_tf=HTF, risk=RISK, year=YEAR)
@@ -458,7 +462,8 @@ if __name__ == "__main__":
     # 3. Backtest
     print("\n[INFO] Running backtest ...")
     trades_df, eq_curve, cap0 = run_backtest(
-        df_result, initial_capital=INITIAL_CAP, risk_usd=RISK_PER_TRADE)
+        df_result, initial_capital=INITIAL_CAP,
+        risk_usd=RISK_PER_TRADE, sl_lookback=SL_LOOKBACK)
 
     # 4. Statistics
     stats = calc_stats(trades_df, eq_curve, cap0)

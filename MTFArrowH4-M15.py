@@ -138,9 +138,10 @@ def build_signals(m15_file, h4_file, year=2025, risk=6):
 
 # ============================================================
 # 3. Backtest  (1:2 RR, fixed risk)
-#    M15 signals are already single-bar events → no bucket dedup
+#    SL Long : lowest Low  of last sl_lookback bars (swing low)
+#    SL Short: highest High of last sl_lookback bars (swing high)
 # ============================================================
-def run_backtest(final_df, initial_capital=10_000, risk_usd=100):
+def run_backtest(final_df, initial_capital=10_000, risk_usd=100, sl_lookback=10):
     df = final_df.reset_index()
     n  = len(df)
 
@@ -183,11 +184,16 @@ def run_backtest(final_df, initial_capital=10_000, risk_usd=100):
             dn = not np.isnan(prev['DnArrow'])
 
             if up or dn:
-                entry = row['Open']
+                sig_idx  = i - 1
+                lookback = df.iloc[max(0, sig_idx - sl_lookback + 1) : sig_idx + 1]
+                entry    = row['Open']
+
                 if up:
-                    sl, side = prev['Low'],  'long'
+                    sl   = lookback['Low'].min()
+                    side = 'long'
                 else:
-                    sl, side = prev['High'], 'short'
+                    sl   = lookback['High'].max()
+                    side = 'short'
 
                 risk_dist = abs(entry - sl)
                 if risk_dist < 1e-6:
@@ -432,8 +438,9 @@ if __name__ == "__main__":
     RISK           = 6
     WINDOW         = 120
     INITIAL_CAP    = 10_000
-    RISK_PER_TRADE = 100
-    YEAR           = 2025     # ← жилийг энд өөрчилнө
+    RISK_PER_TRADE = 100          # $ risked per trade (SL → -$100, TP → +$200)
+    SL_LOOKBACK    = 10           # recent N bars-ийн swing high/low дээр SL тавих
+    YEAR           = 2025         # ← жилийг энд өөрчилнө
 
     # 1. Build signals (M15 filtered by H4 direction)
     df_result = build_signals(M15_FILE, H4_FILE, year=YEAR, risk=RISK)
@@ -444,7 +451,8 @@ if __name__ == "__main__":
     # 3. Backtest
     print("\n[INFO] Running backtest ...")
     trades_df, eq_curve, cap0 = run_backtest(
-        df_result, initial_capital=INITIAL_CAP, risk_usd=RISK_PER_TRADE)
+        df_result, initial_capital=INITIAL_CAP,
+        risk_usd=RISK_PER_TRADE, sl_lookback=SL_LOOKBACK)
 
     # 4. Stats
     stats = calc_stats(trades_df, eq_curve, cap0)
